@@ -1,0 +1,41 @@
+[
+  {
+    "id": "a1",
+    "name": "Bambu Lab A1",
+    "host": "192.168.1.50",
+    "serial": "YOUR_SERIAL",
+    "ftps_port": 990,
+    "code_file": "~/.bambu-code",
+    "card_dir": "",
+    "machine": "Bambu Lab A1 0.4 nozzle.json",
+    "process": "0.20mm Standard @BBL A1.json",
+    "filament": "Bambu PLA Basic @BBL A1.json",
+    "family": "A1",
+    "bed_mm": [
+      256,
+      256
+    ],
+    "has_ams": true,
+    "camera_port": 6000
+  },
+  {
+    "id": "p1s",
+    "name": "Bambu Lab P1S",
+    "host": "192.168.1.50",
+    "serial": "YOUR_SERIAL",
+    "ftps_port": 990,
+    "code_file": "~/.bambu-code",
+    "card_dir": "",
+    "machine": "Bambu Lab P1S 0.4 nozzle.json",
+    "process": "0.20mm Standard @BBL X1C.json",
+    "filament": "Bambu PLA Basic @BBL X1C.json",
+    "family": "X1C",
+    "bed_mm": [
+      256,
+      256
+    ],
+    "has_ams": true,
+    "camera_port": 6000,
+    "note": "host/serial/code are placeholders until the printer arrives"
+  }
+]

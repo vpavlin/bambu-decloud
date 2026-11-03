@@ -100,3 +100,18 @@ calibration, and the resonance flags.
 
 Check it by weight, not by intent: the same model at 15 % infill is 11.46 g and at 50 %
 infill is 17.94 g. If the estimate does not move, the override did not apply.
+
+## A grep is not a leak scan — part two: the token file
+
+`slicer/token` sat in this public repo for weeks and was byte-identical to the live file.
+It was never *in force* (`token_file: ""` skips the check, and the access log shows zero
+requests carrying a token), so nothing was exposed in practice — but "not currently
+enforced" is not a security property, it is a coincidence.
+
+The rule that would have caught it: **scan for secrets by kind, not by string.** Looking for
+the printer serial and the LAN IP finds those two; it does not find a 32-character random
+string in a file called `token` next to a config key called `token_file`. A `git ls-files`
+review of what is actually committed — every file, by name — is the cheap check that works.
+
+Now: `.gitignore` covers `slicer/token`, the live value is rotated (so the published one is
+dead), and `code_file`/`token_file` paths are the only secret-adjacent things in the tree.

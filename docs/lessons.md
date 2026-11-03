@@ -78,3 +78,25 @@ refuses.
 
 The printer's file service is FTPS on **990** (implicit TLS), with the access code as the
 password and `bblp` as the user. Plain FTP on 21 is not open.
+
+## A parameter list in two places is a parameter that disappears
+
+Adding `support`, `infill` and `wallgen` to the slicer's `PARAMS` changed nothing: the job
+creation handler kept its **own** hard-coded tuple of accepted names, so the values were
+dropped before they reached the job, the slicer sliced with defaults, and the only symptom
+was "the setting does nothing".
+
+Same shape as `use_ams`: a control that is connected to nothing. Both now derive from one
+list. When a UI control appears to do nothing, trace the value to where it is *used* before
+suspecting the setting itself.
+
+## Process overrides belong in the process profile
+
+Support, infill density and wall generator are **process** settings, not print-command
+fields: write them into the resolved process profile that the slicer is handed
+(`support_enable`, `sparse_infill_density` as `"50%"`, `wall_generator` as `arachne`), and
+leave the print command to the things it actually carries — bed levelling, flow
+calibration, and the resonance flags.
+
+Check it by weight, not by intent: the same model at 15 % infill is 11.46 g and at 50 %
+infill is 17.94 g. If the estimate does not move, the override did not apply.

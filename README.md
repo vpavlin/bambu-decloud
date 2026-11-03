@@ -12,6 +12,7 @@ a desktop:
 | [`watch/`](watch) | Android app: monitor, camera, AMS, job list, slicing client | your phone |
 | [`slicer/`](slicer) | headless Bambu Studio behind a small HTTP API | any Linux box on the LAN |
 | [`freecad/`](freecad) | FreeCAD macro that publishes a model to WebDAV and queues a slice | the CAD machine |
+| [`tools/`](tools) | `rfb-grab.py`: one framebuffer from a VNC server, no client, no library | anywhere |
 
 ```
    phone (watch)                  LAN                        printer
@@ -24,6 +25,24 @@ a desktop:
 
    laptop (FreeCAD)  ──WebDAV PUT──►  drop  ◄──?url=──  slicer
 ```
+
+There is a fourth piece that makes the rest possible and is not ours: a private overlay
+network that gives every device a stable address and a DNS name, so nothing needs a port
+forward, an account or a public IP. It is described in
+[`docs/the-mesh.md`](docs/the-mesh.md), because with it removed this design does not exist.
+
+## The full story
+
+| document | what it covers |
+|---|---|
+| [`docs/lessons.md`](docs/lessons.md) | the printer: its real error channel, filament semantics, presets, the resonance sweep |
+| [`docs/protocol.md`](docs/protocol.md) | MQTT topics and payloads, FTPS, camera framing |
+| [`docs/freecad-on-a-tablet.md`](docs/freecad-on-a-tablet.md) | **a desktop CAD program on a pen tablet**: Xvfb with GLX, VirtualGL on the GPU, x11vnc, wlvncc in a Basecamp tab, input, scaling, dead ends |
+| [`docs/the-mesh.md`](docs/the-mesh.md) | the overlay network: names, services, portless reachability, what a shared desktop really is |
+| [`infra/`](infra) | systemd units for the slicer and the FreeCAD desktop, and the BasecampOS tab entry |
+
+Read `docs/freecad-on-a-tablet.md` before changing anything about the remote desktop: it
+records four approaches that do not work and why, which is cheaper than rediscovering them.
 
 ## The rules this project follows
 

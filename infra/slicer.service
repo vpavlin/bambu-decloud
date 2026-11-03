@@ -1,0 +1,17 @@
+# Headless slicer as a user service. Install:
+#   cp infra/slicer.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now slicer
+#   loginctl enable-linger "$USER"    # so it survives logout
+[Unit]
+Description=Bambu slicer (headless Bambu Studio over HTTP)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/slicer
+ExecStart=/usr/bin/python3 %h/slicer/slicer.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

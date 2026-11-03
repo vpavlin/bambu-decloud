@@ -1,0 +1,15 @@
+{
+  "host": "0.0.0.0",
+  "port": 8799,
+  "machine": "Bambu Lab A1 0.4 nozzle.json",
+  "process": "0.20mm Standard @BBL A1.json",
+  "filament": "Bambu PLA Basic @BBL A1.json",
+  "printer": "192.168.1.50",
+  "ftps_port": 990,
+  "code_file": "/home/vpavlin/.bambu-code",
+  "card_dir": "",
+  "max_upload_mb": 200,
+  "token_file": "",
+  "_note": "Reach me as http://slicer.proteus.office.mesh (portless). Port 8799 is not on the host firewalld allowlist, so it times out from other machines; a local curl proves nothing.",
+  "strip_vibration": true
+}

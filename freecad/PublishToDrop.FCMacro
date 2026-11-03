@@ -1,0 +1,77 @@
+"""Publish the active document to the LAN WebDAV drop — optionally to the slicer as well."""
+import os
+import sys
+
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
+import FreeCAD
+import FreeCADGui
+import publish_drop
+
+try:
+    from PySide2 import QtWidgets
+except ImportError:                       # FreeCAD 1.x ships PySide6
+    from PySide6 import QtWidgets
+
+
+def _dialog():
+    cfg = publish_drop.load_config()
+    dlg = QtWidgets.QDialog(FreeCADGui.getMainWindow())
+    dlg.setWindowTitle("Publish to drop")
+    form = QtWidgets.QFormLayout(dlg)
+
+    fmt = QtWidgets.QComboBox()
+    idx = {"3mf": 0, "stl": 1, "step": 2}
+    for i, label in enumerate(("3MF (plate-aware, preferred)", "STL (binary)", "STEP (CAD)")):
+        fmt.addItem(label)
+    fmt.setCurrentIndex(idx.get(cfg["format"].lower(), 0))
+    form.addRow("Format", fmt)
+
+    slice_it = QtWidgets.QCheckBox("Also create a slicer job")
+    slice_it.setChecked(True)
+    form.addRow("", slice_it)
+
+    info = QtWidgets.QLabel("%s → %s/" % (cfg["webdav"], cfg["collection"]))
+    info.setWordWrap(True)
+    form.addRow("Target", info)
+
+    note = QtWidgets.QLabel()
+    note.setWordWrap(True)
+    form.addRow("Size", note)
+
+    result = QtWidgets.QLineEdit()
+    result.setReadOnly(True)
+    result.hide()
+    form.addRow("Published", result)
+
+    buttons = QtWidgets.QDialogButtonBox(
+        QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Close)
+    buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Publish")
+    form.addRow(buttons)
+
+    def run():
+        chosen = ("3mf", "stl", "step")[fmt.currentIndex()]
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setEnabled(False)
+        try:
+            url, size, job = publish_drop.publish_document(chosen, slice_it.isChecked())
+            result.setText(url + (("   (job %s)" % job) if job else ""))
+            note.setText(publish_drop.geometry_note(publish_drop.printable_objects(FreeCAD.ActiveDocument)))
+            result.show()
+            result.setFocus()
+            result.selectAll()
+            QtWidgets.QApplication.clipboard().setText(url)
+            FreeCAD.Console.PrintMessage("published %s (%d bytes)%s\n" % (
+                url, size, (" job %s" % job) if job else ""))
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(dlg, "Publish failed", str(e))
+        finally:
+            buttons.button(QtWidgets.QDialogButtonBox.Ok).setEnabled(True)
+
+    buttons.accepted.connect(run)
+    buttons.rejected.connect(dlg.reject)
+    dlg.exec_()
+
+
+_dialog()

@@ -1,0 +1,14 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+
+# mock printer: the key is a throwaway for tests, but a private key in git is a bad habit
+mock/mock.key
+mock/*.log
+mock/got.txt
+mock/suberr.txt
+mock/.*.pid
+build.log

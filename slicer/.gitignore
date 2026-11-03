@@ -1,0 +1,10 @@
+# The Bambu Studio AppImage is extracted here (540 MB) — fetched, not vendored.
+app/
+# Per-job work dirs: sliced output, uploaded STLs from his phone.
+jobs/
+# runtime
+*.log
+__pycache__/
+result.json
+# never in a repo
+.bambu-code

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The printer is spoken to over TLS with a pinned certificate (Tls.kt) and that has not changed.
+
+  The slicer, however, is plain HTTP on the mesh: it is a helper on a private overlay, reached by
+  name (http://slicer.proteus.office.mesh), and giving it a certificate for a name only the mesh
+  resolves would be theatre. Android blocks cleartext by default since API 28, so it has to be
+  allowed deliberately — here, and nowhere else.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

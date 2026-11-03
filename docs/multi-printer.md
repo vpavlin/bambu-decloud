@@ -72,6 +72,31 @@ produce byte-identical gcode, one of them is not being sliced for.
 - Chamber temperature and the auxiliary fan differ; both come from the machine profile, so
   nothing extra is needed as long as the right machine is selected.
 
+## Status and cameras belong to the slicer too
+
+A dashboard showing three printers cannot be built on the phone's own connection: it holds one
+MQTT session to one machine, and three sessions that survive the screen going off is not a thing
+a phone does. So the slicer holds them — one connection per printer, reconnecting forever — and
+serves a small summary:
+
+```
+GET /printers                 → per printer: state, percent, layer, remaining, nozzle, bed,
+                                job name, AMS slots, hms, link: ok|down|unconfigured
+GET /printers/<id>/camera.jpg → one JPEG frame, via the same handshake the app uses
+```
+
+Two protocol facts that made this work, both learned by getting them wrong:
+
+- **Deltas.** The printer pushes partial reports. Replacing the cached summary with each message
+  left a card showing a temperature and nothing else — the job name and `gcode_state` never
+  arrived. Merge, never replace.
+- **`pushall`.** Even merging is not enough: without publishing
+  `{"pushing":{"command":"pushall"}}` on `device/<serial>/request` after subscribing, the printer
+  only ever sends deltas, so the full state never appears at all.
+
+A card is therefore always "what the slicer last heard", with `updated` and a `stale` flag after
+two minutes of silence — never a claim about the present tense it cannot support.
+
 ## The app
 
 The phone currently holds **one** printer's credentials and sends the print command itself.

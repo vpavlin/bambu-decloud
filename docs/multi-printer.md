@@ -74,10 +74,11 @@ produce byte-identical gcode, one of them is not being sliced for.
 
 ## Status and cameras belong to the slicer too
 
-A dashboard showing three printers cannot be built on the phone's own connection: it holds one
-MQTT session to one machine, and three sessions that survive the screen going off is not a thing
-a phone does. So the slicer holds them — one connection per printer, reconnecting forever — and
-serves a small summary:
+A dashboard could be built on the phone's own connections — three TLS sockets are not a feat — but
+not within this app's rules. Each MQTT session needs that printer's serial and access code, so the
+phone would carry every printer's secret; the sessions only survive while the app is open, and
+keeping them alive in the background needs a foreground service, which is ruled out. So the slicer
+holds them — one connection per printer, reconnecting forever — and serves a small summary:
 
 ```
 GET /printers                 → per printer: state, percent, layer, remaining, nozzle, bed,
@@ -111,6 +112,11 @@ Planned shape:
    per-printer access code and one build works with any number of machines.
 4. The monitor still opens its own MQTT connection — but to the *selected* printer, whose
    host/serial it gets from the same list.
+
+A **web reference** is built before the Android screen, because a browser can be tested and
+compared against the design in minutes and an emulator cannot run on this host at all. It is a
+scaffold: it talks to the same endpoints, it is not deployed, and it is deleted once the Android
+app matches it. The Android app is not allowed to drift from it in the meantime.
 
 Step 3 is the important one: it is also what stops the phone from being the only component
 that can start a print, which is what made today's debugging so hard.

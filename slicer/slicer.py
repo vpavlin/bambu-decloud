@@ -13,6 +13,7 @@ Nothing here starts a print. Bambu Watch sends `project_file` when a human taps.
 """
 
 import glob
+import hashlib
 import json
 import math
 import os
@@ -31,6 +32,8 @@ import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pcam
+import pstatus
 import render
 
 HOME = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +55,7 @@ DEFAULTS = {
     "machine": "Bambu Lab A1 0.4 nozzle.json",
     "process": "0.20mm Standard @BBL A1.json",
     "filament": "Bambu PLA Basic @BBL A1.json",
-    "printer": "192.168.1.50",
+    "printer": "192.168.10.143",
     "ftps_port": 990,
     "code_file": "/home/vpavlin/.bambu-code",
     "card_dir": "",        # the ROOT of the card: this is where the printer prints from
@@ -61,7 +64,9 @@ DEFAULTS = {
     "bed_mm": [256.0, 256.0],
 }
 
-PARAMS = ("process", "filament", "copies", "rz", "rx", "ry", "scale", "orient", "tray")
+PARAMS = ("process", "filament", "copies", "rz", "rx", "ry", "scale", "orient", "tray",
+          # process overrides that are worth a control in the app (Václav, 2026-11-03)
+          "support", "infill", "wallgen")
 
 LABELS = {
     "process": "quality", "filament": "filament", "copies": "copies",
@@ -78,8 +83,15 @@ def config():
     return cfg
 
 
-def presets():
+def presets(pid=None):
+    """Presets valid for one printer. Families matter: a P1S takes the X1C process and
+    filament presets, an A1 its own, and mixing them produces a slice that cannot print."""
     out = {"machine": [], "process": [], "filament": []}
+    try:
+        pr = printer(pid)
+    except IOError:
+        pr = None
+    fam = (pr or {}).get("family")
     for kind in ("machine", "process", "filament"):
         d = os.path.join(PROFILES, kind)
         if not os.path.isdir(d):
@@ -87,11 +99,17 @@ def presets():
         for n in sorted(os.listdir(d)):
             if not n.endswith(".json") or "template" in n:
                 continue
-            if kind == "machine" and ("A1 0.4" not in n and n != "Bambu Lab A1.json"):
+            if kind == "machine":
+                if pr and n == pr.get("machine"):
+                    out[kind].append(n)
                 continue
-            if kind == "process" and ("@BBL A1" not in n or "nozzle" in n or "A1M" in n):
+            if fam:
+                tag = "@BBL " + fam
+                if tag not in n or "nozzle" in n:
+                    continue
+            elif kind == "process" and ("@BBL A1" not in n or "nozzle" in n):
                 continue
-            if kind == "filament" and ("A1" not in n or "0.2 nozzle" in n):
+            elif kind == "filament" and ("A1" not in n or "0.2 nozzle" in n):
                 continue
             out[kind].append(n)
     return out
@@ -154,6 +172,73 @@ def _resolve(name, kind):
 # binary STL, slice that).  It does not work: this slicer normalises the imported
 # object's bounding box, so the turn is undone before slicing.  The code is gone
 # rather than left in place looking useful — see `_slice` for what replaced it.
+
+
+# ---------------------------------------------------------------- printers
+# One slicer, several printers. `printers.json` next to config.json is a list; when it is
+# absent the old single-printer config is presented as one entry, so existing setups and
+# requests keep working unchanged.
+
+PRINTERS_PATH = os.path.join(HOME, "printers.json")
+
+
+def printers():
+    cfg = config()
+    raw = cfg.get("printers")
+    if not raw:
+        try:
+            with open(PRINTERS_PATH) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list) and loaded:
+                raw = loaded
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print("printers.json unreadable (%s); using config.json" % e)
+    if not raw:
+        raw = [{
+            "id": "default", "name": "Printer",
+            "host": cfg["printer"], "ftps_port": cfg["ftps_port"],
+            "code_file": cfg["code_file"], "card_dir": cfg.get("card_dir") or "",
+            "machine": cfg["machine"], "process": cfg["process"], "filament": cfg["filament"],
+            "bed_mm": cfg.get("bed_mm") or [256, 256],
+        }]
+    return raw
+
+
+def printer(pid=None):
+    cfg = config()
+    pl = printers()
+    pid = (pid or cfg.get("default_printer") or pl[0]["id"]).strip()
+    for item in pl:
+        if item.get("id") == pid:
+            return item
+    raise IOError("unknown printer %r (known: %s)" % (pid, ", ".join(p.get("id", "?") for p in pl)))
+
+
+def bed_of(item):
+    return tuple(item.get("bed_mm") or (256, 256))
+
+
+STATUS = pstatus.Store()
+CAMERAS = pstatus.CamStore()
+
+
+def public_printers():
+    """What a client may see: no credentials, no file paths."""
+    out = []
+    for p in printers():
+        out.append({
+            "id": p.get("id"), "name": p.get("name") or p.get("id"),
+            "machine": p.get("machine"), "process": p.get("process"),
+            "filament": p.get("filament"), "bed_mm": p.get("bed_mm"),
+            "has_ams": bool(p.get("has_ams", False)),
+            "camera_port": p.get("camera_port"),
+            "reachable": bool(p.get("host")) and p.get("host") != "192.168.10.0",
+            "is_default": p.get("id") == (config().get("default_printer") or printers()[0].get("id")),
+            "status": STATUS.get(p.get("id")),
+        })
+    return out
 
 
 # ---------------------------------------------------------------- card transfer
@@ -309,18 +394,67 @@ def _stats(gcode):
     return out
 
 
+def apply_overrides(profile, params, job=None):
+    """Per-job process overrides: support, infill density, wall generator.
+
+    These live in the *process* profile, not in the print command, so they are written into
+    the resolved profile the CLI is handed. Values keep Bambu's own spellings ("15%",
+    "arachne"); a blank field means "leave the preset alone".
+    """
+    out = dict(profile)
+    support = str(params.get("support") or "").strip().lower()
+    if support not in ("", "auto"):
+        on = support in ("1", "true", "on", "yes")
+        # the key is enable_support. I wrote support_enable, then "verified" it by reading back
+        # the key I had just written — while the slicer ignored it and generated no supports at
+        # all. Check the GCODE for ';TYPE:Support', never the profile for your own key.
+        out["enable_support"] = "1" if on else "0"
+        if on:
+            out.setdefault("support_type", "tree(auto)")
+        if job is not None:
+            _log(job, "support: %s" % ("on" if on else "off"))
+
+    infill = str(params.get("infill") or "").strip()
+    if infill:
+        value = infill if infill.endswith("%") else infill + "%"
+        try:
+            pct = float(value.rstrip("%"))
+            if not 0 <= pct <= 100:
+                raise ValueError
+        except ValueError:
+            raise IOError("infill must be a percentage, got %r" % infill)
+        out["sparse_infill_density"] = value
+        if job is not None:
+            _log(job, "infill: %s" % value)
+
+    wallgen = str(params.get("wallgen") or "").strip().lower()
+    if wallgen:
+        if wallgen not in ("arachne", "classic"):
+            raise IOError("wallgen must be 'arachne' or 'classic', got %r" % wallgen)
+        out["wall_generator"] = wallgen
+        if wallgen == "arachne" and not out.get("wall_transition_angle"):
+            out["wall_transition_angle"] = "10"      # Bambu's Arachne defaults
+        if job is not None:
+            _log(job, "wall generator: %s" % wallgen)
+    return out
+
+
 def _slice(job):
     params = job["params"]
     resolved = {}
-    for kind, name in (("machine", job["machine"]),
-                       ("process", params.get("process") or config()["process"]),
-                       ("filament", params.get("filament") or config()["filament"])):
+    pr = printer(job.get("printer"))
+    for kind, name in (("machine", pr["machine"]),
+                       ("process", params.get("process") or pr["process"]),
+                       ("filament", params.get("filament") or pr["filament"])):
         src = os.path.join(PROFILES, kind, name)
         if not os.path.exists(src):
             raise IOError("preset missing: %s" % name)
+        profile = _resolve(name, kind)
+        if kind == "process":
+            profile = apply_overrides(profile, params, job)
         dst = os.path.join(job["dir"], "resolved_%s.json" % kind)
         with open(dst, "w") as f:
-            json.dump(_resolve(name, kind), f)
+            json.dump(profile, f)
         resolved[kind] = dst
 
     p = params
@@ -387,13 +521,27 @@ def _slice(job):
     with zipfile.ZipFile(three) as z:
         if "Metadata/plate_1.gcode" not in z.namelist():
             raise IOError("3mf has no Metadata/plate_1.gcode — not a sliced project")
+    # If support was requested but the slicer produced none, say so — this went unnoticed once
+    # because the check looked for the wrong key and the wrong gcode label (2026-11-03).
+    wanted = str(job["params"].get("support") or "").strip().lower() in ("1", "true", "on", "yes")
+    if wanted:
+        try:
+            with zipfile.ZipFile(three) as z:
+                gcode = z.read("Metadata/plate_1.gcode").decode("utf-8", "replace")
+            made = gcode.count("FEATURE: Support")
+            if made == 0:
+                _log(job, "WARNING: supports were requested but the gcode contains none")
+            else:
+                _log(job, "supports: %d blocks in the gcode" % made)
+        except Exception as e:
+            _log(job, "could not check for supports: %s" % e)
     job["three_mf"] = three
     job["estimate"] = _stats(os.path.join(out, "plate_1.gcode"))
     job["preview"] = None
     png = os.path.join(job["dir"], "preview.png")
     try:
         info = render.render_gcode(os.path.join(out, "plate_1.gcode"), png,
-                                   bed=tuple(config().get("bed_mm") or (256.0, 256.0)))
+                                   bed=bed_of(printer(job.get("printer"))))
         if info.get("segments"):
             job["preview"] = png
             job["drawn"] = {"segments": info["segments"], "layers": info["layers"]}
@@ -446,11 +594,13 @@ def build_payload(job, base, tray=None):
 
 
 def _upload(job):
-    cfg = config()
+    pr = printer(job.get("printer"))
+    cfg = dict(config())
+    cfg["card_dir"] = pr.get("card_dir", "")
     base_name = os.path.basename(job["three_mf"])
     remote = "%s/%s" % (cfg.get("card_dir") or "", base_name)   # "" -> "/name", the card root
-    code = open(cfg["code_file"]).read().strip()
-    with Ftps(cfg["printer"], cfg["ftps_port"], code) as ftp:
+    code = open(pr["code_file"]).read().strip()
+    with Ftps(pr["host"], pr.get("ftps_port", 990), code) as ftp:
         sent = ftp.upload(job["three_mf"], remote)
         lines = ftp.listing(cfg["card_dir"])
     base = os.path.basename(remote)
@@ -458,8 +608,10 @@ def _upload(job):
         raise IOError("uploaded %d bytes but %s is not in the listing" % (sent, base))
     job["card_path"] = remote
     job["payload"] = build_payload(job, base)
+    sent_tray = (job["params"].get("tray") or "").strip()
     _log(job, "on the card: %s (%d bytes)%s" % (
-        remote, sent, (", AMS slot %s" % tray) if mapping != "" else ", AMS: printer's choice"))
+        remote, sent, (", AMS slot %s" % sent_tray) if sent_tray not in ("", "auto")
+        else ", AMS: no slot chosen, filament is assumed to be loaded"))
 
 
 QUEUE = []
@@ -546,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v for k, v in urllib.parse.parse_qs(u.query).items()}
         parts = [x for x in path.split("/") if x]
         if path == "/":
-            return self._html(PAGE.replace("__PRESETS__", json.dumps(presets()))
+            return self._html(PAGE.replace("__PRESETS__", json.dumps(presets(q.get("printer", [None])[0] if isinstance(q.get("printer"), list) else q.get("printer"))))
                                   .replace("__DEFAULTS__", json.dumps(
                                       {k: config()[k] for k in ("process", "filament")})))
         if parts == ["presets"]:
@@ -560,6 +712,27 @@ class Handler(BaseHTTPRequestHandler):
                 if job:
                     out.append(_view(job, full=False))
             return self._json({"jobs": out, "current": CURRENT})
+        if len(parts) == 3 and parts[0] == "printers" and parts[2].startswith("camera"):
+            try:
+                pr = printer(parts[1])
+                jpg, why = CAMERAS.get(pr.get("id"))
+                if jpg is None:
+                    code = open(pr["code_file"]).read().strip()
+                    jpg = pcam.frame(pr["host"], code, pr.get("camera_port", 6000))
+            except IOError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                return self._json({"error": "%s: %s" % (type(e).__name__, e)}, 502)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpg)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(jpg)
+            return
+        if parts == ["printers"]:
+            return self._json({"printers": public_printers(),
+                               "default": config().get("default_printer") or printers()[0]["id"]})
         if len(parts) == 2 and parts[0] == "jobs":
             job = _read_job(parts[1])
             if not job:
@@ -570,6 +743,21 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 return self._json({"error": "no such job"}, 404)
             what = parts[2]
+            if what == "file":
+                # The phone downloads this and uploads it to the printer's card itself. The slicer
+                # is a calculator: it never holds a printer's address or access code.
+                src = job.get("three_mf")
+                if not src or not os.path.exists(src):
+                    return self._json({"error": "this job has no file yet (state %s)" % job.get("state")}, 409)
+                data = open(src, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Filename", os.path.basename(src))
+                self.send_header("X-Sha256", hashlib.sha256(data).hexdigest())
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if what == "preview.png":
                 p = job.get("preview")
                 if not p or not os.path.exists(p):
@@ -596,7 +784,7 @@ class Handler(BaseHTTPRequestHandler):
                 import gzip
                 layers, feats, total = render.parse_layers(gcode)
                 data, stride, kept = render.toolpath_bin(
-                    layers, feats, tuple(config().get("bed_mm") or (256.0, 256.0)),
+                    layers, feats, tuple(float(v) for v in bed_of(printer(job.get("printer")))),
                     int(q.get("max", ["160000"])[0]))
                 body = gzip.compress(data, 1)
                 self.send_response(200)
@@ -673,13 +861,21 @@ class Handler(BaseHTTPRequestHandler):
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         d = os.path.join(JOBS, job_id)
         os.makedirs(d, exist_ok=True)
-        params = {k: (q.get(k) if q.get(k) is not None else cfg.get(k))
+        try:
+            pr = printer(q.get("printer"))
+        except IOError as e:
+            return self._json({"error": str(e)}, 400)
+        params = {k: (q.get(k) if q.get(k) is not None else pr.get(k))
                   for k in ("process", "filament")}
-        for k in ("copies", "rz", "rx", "ry", "scale", "orient", "tray"):
-            params[k] = q.get(k, "" if k != "copies" else "1")
+        # one list, PARAMS, so a new control in the app cannot be silently dropped here
+        # (the first version of the support/infill/wallgen params was exactly that bug)
+        for k in PARAMS:
+            if k in ("process", "filament"):
+                continue
+            params[k] = q.get(k, "1" if k == "copies" else "")
         job = {"id": job_id, "dir": d, "state": "queued", "log": [],
                "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "machine": cfg["machine"], "params": params}
+               "printer": pr.get("id"), "machine": pr["machine"], "params": params}
         ctype = self.headers.get("Content-Type", "")
         try:
             if ctype.startswith("multipart/form-data"):
@@ -750,6 +946,9 @@ class Handler(BaseHTTPRequestHandler):
                     removed = ftp.delete(job["card_path"])
             except Exception as e:
                 removed = "delete failed: %s" % e
+        ua = self.headers.get("User-Agent", "?")
+        _log(job, "DELETED by %s" % ua[:80])
+        print("[%s] DELETE from %s" % (job["id"][:8], ua[:80]), flush=True)
         shutil.rmtree(job["dir"], ignore_errors=True)
         return self._json({"deleted": job["id"], "card": removed})
 
@@ -943,6 +1142,9 @@ def main():
     print("slicer: %s:%d, %d presets, printer %s"
           % (cfg["host"], cfg["port"], sum(len(v) for v in presets().values()),
              cfg["printer"]), flush=True)
+    started = STATUS.start(printers())
+    CAMERAS.start(printers())
+    print("slicer: watching %s" % (", ".join(started) if started else "no printers"), flush=True)
     srv.serve_forever()
 
 

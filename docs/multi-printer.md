@@ -118,5 +118,22 @@ compared against the design in minutes and an emulator cannot run on this host a
 scaffold: it talks to the same endpoints, it is not deployed, and it is deleted once the Android
 app matches it. The Android app is not allowed to drift from it in the meantime.
 
+### The phone delivers, and the slicer is a calculator
+
+The upload lived in the slicer for one reason: the app had `LIST` and no `STOR`. That is now fixed
+in the app (two protocol facts cost an hour: the FTPS **data** channel is protected by `PROT P`
+too, and a binary transfer needs `TYPE I` first — both fail as `Connection reset by peer`).
+
+So the path is:
+
+```
+phone  → slicer   POST /jobs, GET /jobs/{id}/file     (the .3mf, ~1 MB, sha256 checked)
+phone  → printer  FTPS STOR to the card root
+phone  → printer  project_file + ams_mapping
+```
+
+and the slicer needs no printer at all. Verified from a JVM test against the real printer:
+download 908 688 bytes → STOR → `LIST` shows the same size → `DELE`.
+
 Step 3 is the important one: it is also what stops the phone from being the only component
 that can start a print, which is what made today's debugging so hard.

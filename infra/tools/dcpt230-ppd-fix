@@ -1,0 +1,90 @@
+#!/bin/bash
+# Keep the DCPT230 queue acceptable to strict IPP clients without changing how it prints.
+#
+# Why: Brother's PPD declares page sizes with EMPTY dimensions, and CUPS turns a size it
+# cannot map into an EMPTY keyword in media-supported — an RFC 8011 violation that makes
+# GNOME and lpadmin refuse the whole queue ("Printer returned invalid data").
+#
+# Rules, each learned from a real failure:
+#   1. Only fill values the driver left EMPTY. Its ImageableArea margins (A4 = "9 9 586 833")
+#      stop normal jobs being scaled to the edge and clipped.
+#   2. Borderless keeps the TRUE paper size, or the driver lays the page out from the left and
+#      leaves a ~0.7 mm white stripe on the right (measured on 10x15 photos, 2026-11-07).
+#      Where a bordered twin exists (Br*_S) the twin takes the 2 pt shrink instead.
+#   3. Sizes whose twin is a standard paper (A4, A6, Letter) have no _S partner to absorb it,
+#      so those keep the 2 pt shrink and carry that stripe knowingly. An EXACT duplicate size
+#      is what produces the empty keyword, so a distinct size is not optional.
+#
+# CANONICAL NAMES: A4 (595x842, margins 9 9 586 833, default) · BrA4_B (borderless A4, 593x840)
+#   BrPostC4x6_B (288x432, full bleed) · BrPostC4x6_S (286x430, bordered)
+#   BrPhotoL_B (252x360) · BrPhoto2L_B (360x504) · BrIndexC5x8_B (360x576) · BrA6_B · BrLetter_B
+# Brother's filter maps Br*_B and Br*_S; "A4_B" is NOT a synonym for BrA4_B. Do not alias it.
+#
+# Re-run after a driver reinstall, or after `lpadmin -o` rewrites the PPD.
+set -e
+PPD=${1:-/etc/cups/ppd/DCPT230.ppd}
+[ -f "$PPD" ] || { echo "no such PPD: $PPD" >&2; exit 1; }
+cp -a "$PPD" "$PPD.bak-$(date +%Y%m%d-%H%M%S)"
+python3 - "$PPD" <<'PY'
+import re, sys
+p = sys.argv[1]
+sizes = {'A4':(595,842),'Letter':(612,792),'Legal':(612,1008),'Executive':(522,756),
+ 'A5':(420,595),'A6':(298,420),'B5':(516,729),'JISB6':(363,516),
+ 'BrPostC4x6_S':(288,432),'BrIndexC5x8_S':(360,576),'BrPhotoL_S':(252,360),
+ 'BrPhoto2L_S':(360,504),'EnvDL':(312,624),'EnvC5':(459,649),'Env10':(297,684),
+ 'EnvMonarch':(279,540),'FanFoldGermanLegal':(612,936),'195x270mm':(553,765),
+ 'MexicanLegal':(612,965)}                      # only used where the driver left a size empty
+true_size = {'BrPostC4x6_B':(288,432),'BrIndexC5x8_B':(360,576),'BrPhotoL_B':(252,360),
+             'BrPhoto2L_B':(360,504)}           # borderless = real paper size, full bleed
+bordered_twin = {'BrPostC4x6_S':'BrPostC4x6_B','BrIndexC5x8_S':'BrIndexC5x8_B',
+                 'BrPhotoL_S':'BrPhotoL_B','BrPhoto2L_S':'BrPhoto2L_B'}
+bordered = {'BrA4_B':'A4','BrLetter_B':'Letter','BrA6_B':'A6','A4_B':'A4'}  # no _S partner
+
+def parse(line):
+    m = re.match(r'^\*(\w+) ([^/:]+)(/[^:]*):\s*(.*)$', line)
+    if not m: return None
+    return m.group(1), m.group(2).strip(), m.group(3), m.group(4).strip().strip('"').strip()
+
+out, filled, resized = [], 0, 0
+for line in open(p, encoding='utf-8', errors='replace'):
+    k = parse(line)
+    if not k:
+        out.append(line); continue
+    kind, kw, label, val = k
+    if kind not in ('PageSize','PageRegion','PaperDimension','ImageableArea'):
+        out.append(line); continue
+
+    w = h = full_bleed = None
+    if kw in true_size:
+        w, h = true_size[kw]; full_bleed = True
+    elif kw in bordered_twin:
+        w, h = true_size[bordered_twin[kw]]
+        w, h = w - 2, h - 2; full_bleed = False
+    elif kw in bordered:
+        base = sizes.get(bordered[kw])
+        if base: w, h = base[0] - 2, base[1] - 2; full_bleed = True
+    elif val:
+        parts = val.split()
+        if len(parts) == 2 and all(x.isdigit() for x in parts):
+            out.append(line); continue              # driver value present: leave it alone
+    if w is None and kw in sizes and not val:
+        w, h = sizes[kw]
+
+    if w is not None and (kw in true_size or kw in bordered_twin or kw in bordered):
+        if kind == 'ImageableArea':
+            v = ('0 0 %d %d' % (w, h)) if full_bleed else ('9 9 %d %d' % (w - 9, h - 9))
+        else:
+            v = '%d %d' % (w, h)
+        out.append('*%s %s%s: "%s"\n' % (kind, kw, label, v)); resized += 1
+    elif not val and w is not None:
+        out.append('*%s %s%s: "%d %d"\n' % (kind, kw, label, w, h)); filled += 1
+    else:
+        out.append(line)
+
+s = ''.join(out)
+for kk in ('PageSize','PageRegion','ImageableArea','PaperDimension'):
+    s = s.replace('*Default%s: Letter' % kk, '*Default%s: A4' % kk)
+open(p,'w',encoding='utf-8').write(s)
+print("  filled %d empty, set %d borderless/bordered pairs; default A4" % (filled, resized))
+PY
+systemctl restart cups

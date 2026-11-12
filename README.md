@@ -31,6 +31,8 @@ network that gives every device a stable address and a DNS name, so nothing need
 forward, an account or a public IP. It is described in
 [`docs/the-mesh.md`](docs/the-mesh.md), because with it removed this design does not exist.
 
+- [docs/print-server.md](docs/print-server.md) — CUPS on the mesh: the vendor driver, the PPD fix, printing costs, and the traps that look like hardware faults
+
 ## The full story
 
 | document | what it covers |

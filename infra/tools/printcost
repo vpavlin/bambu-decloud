@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""What have we spent on printing?
+
+Ink is derived from Brother's own yields, which are quoted at 5 % page coverage, scaled by
+the coverage of the page being costed. Paper and filament are real prices. Nothing here is
+measured by the printer - it exposes no ink counter - so every input is either a price you
+pay, a yield off a label, or a stated coverage.
+
+    printcost                 everything
+    printcost --jobs          per-job lines
+    printcost --days 7        last week
+    printcost --3d            filaments and electricity from the slicer
+"""
+import argparse, csv, glob, json, os, time
+
+CONF = "/etc/printcost.conf"
+LEDGER = "/var/lib/printcost/ledger.csv"
+SLICER = "/home/vpavlin/slicer/jobs"
+
+def conf():
+    out = {}
+    for line in open(CONF):
+        line = line.split('#')[0].strip()
+        if '=' in line:
+            k, v = line.split('=', 1)
+            k, v = k.strip(), v.strip().strip('"')
+            try: out[k] = float(v)
+            except ValueError: out[k] = v
+    return out
+
+def paper_for(media, c):
+    m = (media or '').lower()
+    if 'photo' in m or '4x6' in m or '10x15' in m: return c.get('paper_photo_10x15', 0.94)
+    if m.startswith('a5'): return c.get('paper_a5', 0.08)
+    if 'a4' in m: return c.get('paper_a4', 0.15)
+    if '_b' in m:  return c.get('paper_photo_10x15', 0.94)   # borderless photo sizes
+    return c.get('paper_other', 0.15)
+
+def coverage_for(kind, media, c):
+    m = (media or '').lower()
+    if kind == 'photo' or 'photo' in m or '4x6' in m or '10x15' in m or m.endswith('_b'):
+        return c.get('coverage_photo', 100)
+    return c.get('coverage_text', 5)
+
+def ink_cost(c, coverage_pct, kind):
+    """Yield is quoted at 5 % coverage; scale linearly from there."""
+    scale = coverage_pct / 5.0
+    black = (c.get('ink_black_price', 169) / max(1.0, c.get('ink_black_yield', 7500))) * scale
+    if kind == 'mono':
+        return black
+    return black + 3 * (c.get('ink_colour_price', 131) / max(1.0, c.get('ink_colour_yield', 5000))) * scale
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--days', type=float, default=None)
+    ap.add_argument('--jobs', action='store_true')
+    ap.add_argument('--3d', dest='threed', action='store_true')
+    ap.add_argument('--coverage', type=float, default=None, help='override coverage %% for a what-if')
+    a = ap.parse_args()
+    c = conf(); cur = c.get('currency', 'Kč')
+
+    rows = []
+    if os.path.exists(LEDGER):
+        for r in csv.reader(open(LEDGER)):
+            if len(r) < 7: continue
+            ts, job, printer, pages, media, kind, what = r[:7]
+            try: pages = int(pages)
+            except ValueError: continue
+            try: when = time.mktime(time.strptime(ts[:19], '%Y-%m-%dT%H:%M:%S'))
+            except Exception: when = 0
+            if a.days and when < time.time() - a.days * 86400: continue
+            cov = a.coverage if a.coverage is not None else coverage_for(kind, media, c)
+            rows.append(dict(ts=ts[:19], job=job, pages=pages, media=media, kind=kind, what=what, cov=cov,
+                             paper=pages * paper_for(media, c), ink=pages * ink_cost(c, cov, kind)))
+
+    if not rows:
+        print("  no ledger entries yet — use `pp` rather than `lp` so pages are counted")
+    else:
+        tp = sum(r['pages'] for r in rows); tpaper = sum(r['paper'] for r in rows); tink = sum(r['ink'] for r in rows)
+        print(f"  inkjet: {len(rows)} jobs · {tp} pages")
+        print(f"    paper {tpaper:7.2f} {cur}   ink {tink:7.2f} {cur}   total {tpaper+tink:7.2f} {cur}")
+        if a.jobs:
+            print()
+            for r in rows[-25:]:
+                print(f"    {r['ts']}  {r['job']:<15} {r['pages']:>2}p {r['media']:<10} {r['kind']:<7} "
+                      f"{r['cov']:>3.0f}%  {r['paper']+r['ink']:6.2f} {cur}  {r['what'][:34]}")
+
+    if a.threed:
+        grams = kwhs = 0.0; n = 0
+        for p in glob.glob(os.path.join(SLICER, '*', 'job.json')):
+            try: d = json.load(open(p))
+            except Exception: continue
+            e = d.get('estimate') or {}
+            if not e.get('grams'): continue
+            if a.days and os.path.getmtime(p) < time.time() - a.days * 86400: continue
+            grams += e.get('grams') or 0
+            kwhs += ((e.get('seconds') or 0) / 3600.0) * (c.get('printer_watts', 25) / 1000.0)
+            n += 1
+        fil = grams / 1000.0 * c.get('filament_per_kg', 300); ele = kwhs * c.get('kwh', 4.5)
+        print(f"  3D: {n} sliced jobs · {grams:.0f} g filament")
+        print(f"    filament {fil:7.2f} {cur}   electricity {ele:6.2f} {cur}   total {fil+ele:7.2f} {cur}")
+        print("    (slices, not necessarily prints)")
+
+if __name__ == '__main__':
+    main()
